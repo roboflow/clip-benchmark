@@ -94,13 +94,13 @@ def benchmark_onnx(device_id: str, batch_size: int, quantizate: bool = False, te
     io_binding.bind_ortvalue_output("output", output)
 
     # warmap
-    for _ in range(10):
+    for _ in range(2):
         session.run_with_iobinding(io_binding)
 
     times = []
     if device_id == "cuda":
         torch.cuda.synchronize()
-    n = 50
+    n = 5
     for _ in tqdm(range(n)):
         start = perf_counter()
         session.run_with_iobinding(io_binding)
