@@ -10,6 +10,8 @@ import onnxruntime as ort
 from pathlib import Path
 import pandas as pd
 
+MODEL_NAME = "ViT-L/14"
+
 @dataclass
 class BenchmarkResult:
     times: int
@@ -41,7 +43,7 @@ class BenchmarkResult:
 def benchmark_torch(device_id: str, batch_size: int, jit: bool):
     device = torch.device(device_id)
     print(f"Loading model, {jit=}")
-    model, _ = clip.load("ViT-B/32", jit=jit, device=device)
+    model, _ = clip.load(MODEL_NAME, jit=jit, device=device)
     
     image = torch.randn((batch_size, 3, 224, 224), device=device)
     with torch.no_grad():
@@ -62,25 +64,16 @@ def benchmark_torch(device_id: str, batch_size: int, jit: bool):
 
     return BenchmarkResult(times=n, mean=times_t.mean().item(), std=times_t.std().item())
 
-def benchmark_onnx(device_id: str, batch_size: int, quantizate: bool = False, tensorrt: bool = False, openvino: bool = False):
+def benchmark_onnx(device_id: str, batch_size: int, quantizate: bool = False):
     providers = ["CPUExecutionProvider"]
     sess_options = ort.SessionOptions()
     sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
 
-   
     if device_id == "cuda":
-        providers = [("CUDAExecutionProvider", {"cudnn_conv_use_max_workspace": '1', 'cudnn_conv_algo_search': 'EXHAUSTIVE',
-}), *providers]
+        providers = ["CUDAExecutionProvider"]
+        torch.cuda.synchronize()
 
-    if tensorrt:
-        providers = ["TensorrtExecutionProvider", *providers]
-
-    if openvino:
-        providers = ["OpenVINOExecutionProvider", *providers]
-
-    model_path = "./ViT-B_32.quant.onnx" if  quantizate else "./ViT-B_32.onnx"
-    print(providers)
-    print(f"quantizate={quantizate}")
+    model_path = f"./{MODEL_NAME.replace('/', '_')}.quant.onnx" if  quantizate else f"./{MODEL_NAME.replace('/', '_')}.onnx"
     session = ort.InferenceSession(model_path, providers=providers)
 
     x = torch.randn((batch_size, 3, 224, 224)).numpy()
@@ -94,13 +87,11 @@ def benchmark_onnx(device_id: str, batch_size: int, quantizate: bool = False, te
     io_binding.bind_ortvalue_output("output", output)
 
     # warmap
-    for _ in range(2):
+    for _ in range(10):
         session.run_with_iobinding(io_binding)
 
     times = []
-    if device_id == "cuda":
-        torch.cuda.synchronize()
-    n = 5
+    n = 50
     for _ in tqdm(range(n)):
         start = perf_counter()
         session.run_with_iobinding(io_binding)
@@ -127,7 +118,7 @@ if __name__ == "__main__":
     if "torch" in runtime:
         result = benchmark_torch(device_id, batch_size, jit="jit" in runtime)
     elif "onnx" in runtime:
-        result = benchmark_onnx(device_id, batch_size, quantizate = "quant" in runtime, tensorrt = "tensorrt" in runtime, openvino = "openvino" in runtime)
+        result = benchmark_onnx(device_id, batch_size, quantizate = "quant" in runtime)
     else:
         raise ValueError(f"Runtime {runtime} not supported.")
     
