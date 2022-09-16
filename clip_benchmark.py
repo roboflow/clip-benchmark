@@ -10,7 +10,8 @@ import onnxruntime as ort
 from pathlib import Path
 import pandas as pd
 
-MODEL_NAME = "ViT-L/14"
+# MODEL_NAME = "ViT-L/14"
+MODEL_NAME = "ViT-B/32"
 
 @dataclass
 class BenchmarkResult:
@@ -46,33 +47,43 @@ def benchmark_torch(device_id: str, batch_size: int, jit: bool):
     model, _ = clip.load(MODEL_NAME, jit=jit, device=device)
     
     image = torch.randn((batch_size, 3, 224, 224), device=device)
+    print(f"Shape = {image.shape}")
     with torch.no_grad():
         # warmap
         for _ in range(10):
             model.encode_image(image)
 
-        n = 50
+        if device_id == "cuda":
+            torch.cuda.synchronize()
+        
+        n = 25
         times = []
-        torch.cuda.synchronize()
         for _ in tqdm(range(n)):
             start = perf_counter()
             model.encode_image(image).shape
             times.append(perf_counter() - start)
-            times_t = torch.as_tensor(times)
-    
+   
     times_t = torch.as_tensor(times)
 
     return BenchmarkResult(times=n, mean=times_t.mean().item(), std=times_t.std().item())
 
-def benchmark_onnx(device_id: str, batch_size: int, quantizate: bool = False):
+def benchmark_onnx(device_id: str, batch_size: int, quantizate: bool = False, tensorrt: bool = False):
     providers = ["CPUExecutionProvider"]
     sess_options = ort.SessionOptions()
     sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
 
     if device_id == "cuda":
-        providers = ["CUDAExecutionProvider"]
-        torch.cuda.synchronize()
+        providers = [('CUDAExecutionProvider', {
+            # 'device_id': 0,
+            # # 'arena_extend_strategy': 'kNextPowerOfTwo',
+            # # 'gpu_mem_limit': 2 * 1024 * 1024 * 1024,
+            # 'cudnn_conv_algo_search': 'EXHAUSTIVE',
+            # 'do_copy_in_default_stream': True,
+        }), *providers]
 
+    if tensorrt:
+        providers = ["TensorrtExecutionProvider", *providers]
+    print(f"Onnx with providers={providers}")
     model_path = f"./{MODEL_NAME.replace('/', '_')}.quant.onnx" if  quantizate else f"./{MODEL_NAME.replace('/', '_')}.onnx"
     session = ort.InferenceSession(model_path, providers=providers)
 
@@ -90,12 +101,16 @@ def benchmark_onnx(device_id: str, batch_size: int, quantizate: bool = False):
     for _ in range(10):
         session.run_with_iobinding(io_binding)
 
+    if device_id == "cuda":
+        torch.cuda.synchronize()
+
     times = []
-    n = 50
+    n = 25
     for _ in tqdm(range(n)):
         start = perf_counter()
         session.run_with_iobinding(io_binding)
         times.append(perf_counter() - start)
+
     times_t = torch.as_tensor(times)
 
     return BenchmarkResult(times=n, mean=times_t.mean().item(), std=times_t.std().item()
@@ -116,9 +131,9 @@ if __name__ == "__main__":
     print(f"Using {device_id=}")
 
     if "torch" in runtime:
-        result = benchmark_torch(device_id, batch_size, jit="jit" in runtime)
+        result = benchmark_torch(device_id, batch_size, jit="jit" in runtime,)
     elif "onnx" in runtime:
-        result = benchmark_onnx(device_id, batch_size, quantizate = "quant" in runtime)
+        result = benchmark_onnx(device_id, batch_size, quantizate = "quant" in runtime, tensorrt = "tensorrt" in runtime)
     else:
         raise ValueError(f"Runtime {runtime} not supported.")
     
